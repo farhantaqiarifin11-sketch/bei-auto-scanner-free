@@ -1,0 +1,118 @@
+
+name: BEI Auto Scanner
+
+on:
+  workflow_dispatch:
+
+  schedule:
+    # Top 10 pukul 06.00 WIB, Senin-Jumat
+    - cron: "0 23 * * 0-4"
+
+    # Pemindaian terakhir pukul 08.40 WIB
+    - cron: "40 1 * * 1-5"
+
+    # Pemindaian rutin setiap 20 menit
+    - cron: "0,20,40 2-8 * * 1-5"
+
+    # Momentum pukul 09.15 WIB
+    - cron: "15 2 * * 1-5"
+
+permissions:
+  contents: write
+
+concurrency:
+  group: bei-auto-scanner
+  cancel-in-progress: false
+
+jobs:
+  scan:
+    name: BEI Auto Scanner
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+
+    env:
+      TZ: Asia/Jakarta
+      TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
+      TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v5
+
+      - name: Setup Python
+        uses: actions/setup-python@v6
+        with:
+          python-version: "3.11"
+          cache: pip
+
+      - name: Periksa file
+        run: |
+          test -f scanner.py
+          test -f config.json
+          test -f requirements.txt
+          echo "Semua file utama tersedia."
+
+      - name: Validasi konfigurasi
+        run: python -m json.tool config.json
+
+      - name: Instal dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r requirements.txt
+
+      - name: Jalankan scanner
+        run: python -u scanner.py
+
+      - name: Tes koneksi Telegram
+        if: always()
+        run: |
+          python - <<'PY'
+          import os
+          import requests
+
+          token = os.environ.get("TELEGRAM_BOT_TOKEN")
+          chat_id = os.environ.get("TELEGRAM_CHAT_ID")
+
+          if not token or not chat_id:
+              raise SystemExit("Token atau Chat ID kosong.")
+
+          url = f"https://api.telegram.org/bot{token}/sendMessage"
+
+          response = requests.post(
+              url,
+              json={
+                  "chat_id": chat_id,
+                  "text": "TES BEI AUTO SCANNER: Telegram berhasil terhubung."
+              },
+              timeout=20
+          )
+
+          print("HTTP:", response.status_code)
+          print("HASIL:", response.text)
+
+          response.raise_for_status()
+
+          if not response.json().get("ok"):
+              raise SystemExit("Telegram gagal menerima pesan.")
+
+          print("PENGIRIMAN TELEGRAM BERHASIL.")
+          PY
+
+      - name: Simpan riwayat alert
+        if: success()
+        run: |
+          if [ -d data ]; then
+            git config user.name "github-actions[bot]"
+            git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+
+            git add -A data/
+
+            if ! git diff --cached --quiet; then
+              git commit -m "Update scanner alert state"
+              git push
+            else
+              echo "Tidak ada perubahan data."
+            fi
+          else
+            echo "Folder data belum tersedia."
+          fi
